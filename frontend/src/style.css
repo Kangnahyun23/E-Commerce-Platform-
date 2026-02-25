@@ -1,0 +1,133 @@
+@import "tailwindcss";
+
+@theme {
+  /* Off-white luxury - Apple Store / Vogue style */
+  --color-primary: #1a1a1a;
+  --color-primary-soft: #2d2d2d;
+  --color-background: #faf9f6;
+  --color-background-alt: #f5f0eb;
+  --color-accent: #c9a96e;
+  --color-text: #1a1a1a;
+  --color-text-muted: #6b6b6b;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Playfair Display", ui-serif, Georgia, serif;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--font-sans);
+  background-color: var(--color-background);
+  color: var(--color-text);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+::selection {
+  background: rgba(201, 169, 110, 0.35);
+  color: #1a1a1a;
+}
+
+.glass {
+  background: rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.08);
+}
+
+.glass-strong {
+  background: rgba(255, 255, 255, 0.74);
+  backdrop-filter: blur(26px);
+  -webkit-backdrop-filter: blur(26px);
+  border: 1px solid rgba(255, 255, 255, 0.58);
+  box-shadow: 0 20px 44px rgba(0, 0, 0, 0.1);
+}
+
+.glass-shine {
+  position: relative;
+  overflow: hidden;
+}
+
+.glass-shine::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    115deg,
+    transparent 25%,
+    rgba(255, 255, 255, 0.42) 46%,
+    transparent 68%
+  );
+  transform: translateX(-130%);
+  transition: transform 0.75s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.glass-shine:hover::after {
+  transform: translateX(130%);
+}
+
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(26, 26, 26, 0.18);
+  border-radius: 999px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.animate-float {
+  animation: floatY 6s ease-in-out infinite;
+}
+
+.animate-shimmer {
+  background: linear-gradient(
+    100deg,
+    rgba(255, 255, 255, 0.08) 20%,
+    rgba(255, 255, 255, 0.58) 50%,
+    rgba(255, 255, 255, 0.08) 80%
+  );
+  background-size: 220% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+@keyframes floatY {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 220% 0;
+  }
+  to {
+    background-position: -220% 0;
+  }
+}
