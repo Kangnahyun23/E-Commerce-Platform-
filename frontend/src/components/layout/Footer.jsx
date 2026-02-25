@@ -15,7 +15,7 @@ export default function Footer({ onOpenAIChat }) {
               KÍNH TỐT
             </div>
             <p className="text-sm text-[#6f6961] leading-relaxed">
-              Nền tảng B2C & C2C chuyên về kính mắt. Mua mới, mua cũ, tư vấn AI theo phong cách của bạn.
+              Nền tảng giao dịch kính mắt trực tuyến. Mua mới, mua cũ, tư vấn phong cách dành riêng cho bạn.
             </p>
             <div className="flex items-center gap-2">
               <a href="#" aria-label="Instagram" className="w-9 h-9 rounded-full glass inline-flex items-center justify-center">
