@@ -1,5 +1,4 @@
 const orderService = require('../services/order.service');
-const vnpayService = require('../services/vnpay.service');
 const { sendSuccess, sendCreated } = require('../utils/response');
 
 async function create(req, res, next) {

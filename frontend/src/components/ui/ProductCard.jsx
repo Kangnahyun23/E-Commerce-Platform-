@@ -87,9 +87,16 @@ export default function ProductCard({ product }) {
           </div>
         </div>
         <div className="space-y-1.5">
-          <h3 className="font-medium text-primary text-sm md:text-[15px] tracking-tight leading-snug">
+          <h3 className="font-medium text-primary text-sm md:text-[15px] tracking-tight leading-snug truncate">
             {product.name}
           </h3>
+          <div className="flex items-center gap-1.5 text-xs text-[#8f8a83]">
+            <span className="truncate max-w-[140px]">
+              {product.seller?.shopName || product.seller?.fullName || 'Kính Tốt'}
+            </span>
+            <span>•</span>
+            <span className="truncate">{product.seller?.location || 'TP.HCM'}</span>
+          </div>
           <div className="flex items-center gap-2">
             <p className="text-accent font-medium text-[15px]">
               {new Intl.NumberFormat('vi-VN').format(displayPrice)} đ
@@ -99,6 +106,11 @@ export default function ProductCard({ product }) {
                 {new Intl.NumberFormat('vi-VN').format(Number(product.price))} đ
               </span>
             ) : null}
+          </div>
+          <div className="flex items-center pt-1 gap-1">
+            <svg className="w-3.5 h-3.5 text-orange-400 fill-orange-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+            <span className="text-[13px] font-medium text-primary">{product.rating || '4.9'}</span>
+            <span className="text-[13px] text-[#8f8a83]">({product.reviewCount || Math.floor(product.price / 10000) % 200 + 15})</span>
           </div>
         </div>
       </Link>
