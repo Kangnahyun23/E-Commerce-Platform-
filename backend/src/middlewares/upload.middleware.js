@@ -36,5 +36,6 @@ const memoryUpload = multer({
 
 const uploadKYC = upload.single('kycDocument');
 const uploadProductImage = memoryUpload.single('image');
+const uploadAvatar = memoryUpload.single('avatar');
 
-module.exports = { upload, uploadKYC, uploadProductImage };
+module.exports = { upload, uploadKYC, uploadProductImage, uploadAvatar };

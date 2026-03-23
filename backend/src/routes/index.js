@@ -1,4 +1,4 @@
-// routes/index.js - mount all routes
+﻿// routes/index.js - mount all routes
 const express = require('express');
 const router = express.Router();
 const authRoutes = require('./auth.routes');

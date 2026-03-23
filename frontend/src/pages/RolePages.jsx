@@ -67,6 +67,60 @@ function currency(value) {
   return `${new Intl.NumberFormat('vi-VN').format(amount)} đ`;
 }
 
+function numberFormat(value) {
+  return new Intl.NumberFormat('vi-VN').format(Number(value || 0));
+}
+
+function percent(value) {
+  const num = Number(value || 0);
+  return `${num.toFixed(2)}%`;
+}
+
+function formatShortDateLabel(dateText) {
+  if (!dateText) return '--';
+  const date = new Date(`${dateText}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return dateText;
+  return date.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' });
+}
+
+function statusLabel(status) {
+  const labels = {
+    PENDING: 'Cho xac nhan',
+    CONFIRMED: 'Da xac nhan',
+    SHIPPING: 'Dang giao',
+    DELIVERED: 'Da giao',
+    CANCELLED: 'Da huy',
+  };
+  return labels[status] || status || '--';
+}
+
+function formatDelta(delta) {
+  const num = Number(delta);
+  if (!Number.isFinite(num)) return '--';
+  const prefix = num > 0 ? '+' : '';
+  return `${prefix}${num.toFixed(2)}%`;
+}
+
+function aggregateSeriesByWeek(rows = [], valueKeys = []) {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  const sorted = [...rows].sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const output = [];
+  for (let i = 0; i < sorted.length; i += 7) {
+    const chunk = sorted.slice(i, i + 7);
+    const first = chunk[0];
+    const last = chunk[chunk.length - 1];
+    const item = {
+      ...first,
+      date: first.date,
+      label: `${formatShortDateLabel(first.date)}-${formatShortDateLabel(last.date)}`,
+    };
+    for (const key of valueKeys) {
+      item[key] = chunk.reduce((sum, row) => sum + Number(row?.[key] || 0), 0);
+    }
+    output.push(item);
+  }
+  return output;
+}
 function PageShell({ title, subtitle, children, hideHeader }) {
   const { user } = useAuth();
 
@@ -96,6 +150,22 @@ function StatCard({ label, value, icon: Icon, accentColor = '#c9a96e' }) {
       ) : null}
       <p className="text-xs uppercase tracking-[0.16em] text-text-muted">{label}</p>
       <p className="font-serif text-3xl mt-2 text-primary">{value}</p>
+    </div>
+  );
+}
+
+function SellerKpiCard({ label, value, delta, icon: Icon, accentColor = '#10B981' }) {
+  const deltaText = formatDelta(delta);
+  return (
+    <div className="glass rounded-2xl p-4 relative overflow-hidden min-w-0">
+      {Icon ? (
+        <div className="absolute top-3 right-3 rounded-xl p-2" style={{ background: `${accentColor}1a` }}>
+          <Icon size={16} style={{ color: accentColor }} strokeWidth={1.6} />
+        </div>
+      ) : null}
+      <p className="text-[11px] uppercase tracking-[0.12em] text-text-muted pr-8">{label}</p>
+      <p className="font-serif text-2xl mt-2 text-primary truncate">{value}</p>
+      <p className="text-[11px] text-text-muted mt-1">So voi ky truoc: {deltaText}</p>
     </div>
   );
 }
@@ -1023,93 +1093,456 @@ export function BuyerProfilePage() {
 }
 
 export function SellerDashboardPage() {
-  const { user } = useAuth();
-  const [products, setProducts] = useState([]);
-  const [orders, setOrders] = useState([]);
+  const [stats, setStats] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [range, setRange] = useState('30d');
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  const timeZone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Ho_Chi_Minh', []);
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
+    setError('');
 
-    const load = async () => {
-      try {
-        const [productsRes, ordersRes] = await Promise.all([
-          api.get('/products', { params: { limit: 100 } }),
-          api.get('/orders/manage', { params: { limit: 20, page: 1 } }),
-        ]);
+    api.get('/seller/dashboard', { params: { range, tz: timeZone } })
+      .then((response) => {
+        if (!cancelled) setStats(response.data?.data || null);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setStats(null);
+          setError(err.response?.data?.message || 'Khong the tai seller dashboard.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
 
-        if (cancelled) return;
-        const productItems = productsRes.data?.data?.items || [];
-        const ownProducts = productItems.filter((item) => item.seller?.id === user?.id);
-        setProducts(ownProducts);
-        setOrders(ordersRes.data?.data?.items || []);
-      } catch {
-        if (cancelled) return;
-        setProducts([]);
-        setOrders([]);
-      }
-    };
-
-    load();
     return () => { cancelled = true; };
-  }, [user?.id]);
+  }, [range, refreshTick, timeZone]);
 
-  const lowStockCount = useMemo(() => products.filter((item) => Number(item.stock || 0) < 5).length, [products]);
-  const pendingOrders = useMemo(() => orders.filter((item) => item.status === 'PENDING').length, [orders]);
-  const processingOrders = useMemo(() => orders.filter((item) => item.status === 'PROCESSING').length, [orders]);
-  const estimatedRevenue = useMemo(() => orders.reduce((sum, item) => sum + Number(item.totalAmount || 0), 0), [orders]);
-  const recentOrders = useMemo(() => [...orders].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 5), [orders]);
+  const summary = stats?.summary || {};
+  const delta = stats?.delta || {};
+  const traffic = stats?.traffic || { status: 'unconfigured', provider: 'none', message: null };
+  const topProducts = stats?.topProducts || [];
+  const lowStock = stats?.lowStock || [];
+  const recentOrders = stats?.recentOrders || [];
+  const rangeLabel = range === '7d' ? '7 ngay' : range === '30d' ? '30 ngay' : '90 ngay';
+  const chartBucketLabel = range === '90d' ? 'theo tuan' : 'theo ngay';
 
-  const topProducts = useMemo(() => {
-    const sorted = [...products]
-      .sort((a, b) => Number(b.stock || 0) - Number(a.stock || 0))
-      .slice(0, 3);
-    return sorted;
-  }, [products]);
+  const revenueRows = useMemo(() => {
+    const rows = Array.isArray(stats?.series?.revenue) ? stats.series.revenue : [];
+    if (range !== '90d') {
+      return rows.map((row) => ({
+        ...row,
+        label: formatShortDateLabel(row.date),
+      }));
+    }
+    return aggregateSeriesByWeek(rows, ['revenue', 'totalOrders', 'completedOrders', 'cancelledOrders']);
+  }, [stats, range]);
+
+  const trafficRows = useMemo(() => {
+    const rows = Array.isArray(stats?.series?.traffic) ? stats.series.traffic : [];
+    if (range !== '90d') {
+      return rows.map((row) => ({
+        ...row,
+        label: formatShortDateLabel(row.date),
+      }));
+    }
+    return aggregateSeriesByWeek(rows, ['visits', 'uniqueVisitors', 'pageViews']);
+  }, [stats, range]);
+
+  const orderStatusCount = useMemo(() => {
+    const result = { PENDING: 0, CONFIRMED: 0, SHIPPING: 0, DELIVERED: 0, CANCELLED: 0 };
+    for (const row of stats?.distribution?.orderStatus || []) {
+      if (Object.prototype.hasOwnProperty.call(result, row.status)) {
+        result[row.status] = Number(row.count || 0);
+      }
+    }
+    return result;
+  }, [stats]);
+
+  const revenueLineData = useMemo(() => ({
+    labels: revenueRows.map((row) => row.label),
+    datasets: [
+      {
+        label: 'Doanh thu',
+        data: revenueRows.map((row) => Number(row.revenue || 0)),
+        borderColor: CHART_COLORS.revenue,
+        backgroundColor: CHART_COLORS.revenueFill,
+        borderWidth: 2,
+        pointRadius: 3,
+        pointHoverRadius: 5,
+        tension: 0.35,
+        fill: true,
+      },
+    ],
+  }), [revenueRows]);
+
+  const revenueLineOptions = useMemo(() => ({
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          title: (items) => `Moc ${items[0]?.label}`,
+          label: (ctx) => ` Doanh thu: ${currency(ctx.raw)}`,
+        },
+      },
+    },
+    scales: {
+      x: {
+        grid: { color: CHART_COLORS.grid },
+        ticks: { color: CHART_COLORS.tick, font: { size: 11 } },
+      },
+      y: {
+        grid: { color: CHART_COLORS.grid },
+        ticks: {
+          color: CHART_COLORS.tick,
+          font: { size: 11 },
+          callback: (value) => `${(Number(value) / 1_000_000).toFixed(1)}M`,
+        },
+      },
+    },
+  }), []);
+
+  const doughnutData = useMemo(() => ({
+    labels: ['Cho xac nhan', 'Da xac nhan', 'Dang giao', 'Da giao', 'Da huy'],
+    datasets: [{
+      data: [
+        orderStatusCount.PENDING,
+        orderStatusCount.CONFIRMED,
+        orderStatusCount.SHIPPING,
+        orderStatusCount.DELIVERED,
+        orderStatusCount.CANCELLED,
+      ],
+      backgroundColor: CHART_COLORS.orderSlices,
+      borderWidth: 0,
+      hoverOffset: 8,
+    }],
+  }), [orderStatusCount]);
+
+  const trafficLineData = useMemo(() => ({
+    labels: trafficRows.map((row) => row.label),
+    datasets: [
+      {
+        label: 'Visits',
+        data: trafficRows.map((row) => Number(row.visits || 0)),
+        borderColor: '#1A1A1A',
+        backgroundColor: 'rgba(26,26,26,0.08)',
+        borderWidth: 1.8,
+        fill: true,
+        tension: 0.35,
+      },
+      {
+        label: 'Unique visitors',
+        data: trafficRows.map((row) => Number(row.uniqueVisitors || 0)),
+        borderColor: '#60A5FA',
+        backgroundColor: 'rgba(96,165,250,0.12)',
+        borderWidth: 1.8,
+        fill: true,
+        tension: 0.35,
+      },
+    ],
+  }), [trafficRows]);
+
+  const trafficLineOptions = useMemo(() => ({
+    ...SPARKLINE_OPTIONS,
+    plugins: {
+      ...SPARKLINE_OPTIONS.plugins,
+      tooltip: {
+        callbacks: {
+          title: (items) => `Moc ${items[0]?.label}`,
+          label: (ctx) => ` ${ctx.dataset.label}: ${numberFormat(ctx.raw)}`,
+        },
+      },
+    },
+    scales: {
+      x: { grid: { color: CHART_COLORS.grid }, ticks: { color: CHART_COLORS.tick, font: { size: 11 } } },
+      y: { grid: { color: CHART_COLORS.grid }, ticks: { color: CHART_COLORS.tick, font: { size: 11 }, beginAtZero: true } },
+    },
+  }), []);
+
+  const topProductBarData = useMemo(() => ({
+    labels: topProducts.map((item) => (item.productName?.length > 24 ? `${item.productName.slice(0, 24)}...` : item.productName)),
+    datasets: [{
+      label: 'Doanh thu',
+      data: topProducts.map((item) => Number(item.revenue || 0)),
+      backgroundColor: '#1A1A1A',
+      hoverBackgroundColor: '#4ADE80',
+      borderRadius: 4,
+      borderWidth: 0,
+    }],
+  }), [topProducts]);
+
+  const topProductBarOptions = useMemo(() => ({
+    indexAxis: 'y',
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: (ctx) => ` Doanh thu: ${currency(ctx.raw)}`,
+          afterLabel: (ctx) => {
+            const product = topProducts[ctx.dataIndex];
+            return product ? ` So luong ban: ${numberFormat(product.quantitySold)}` : '';
+          },
+        },
+      },
+    },
+    scales: {
+      x: {
+        grid: { color: CHART_COLORS.grid },
+        ticks: {
+          color: CHART_COLORS.tick,
+          font: { size: 11 },
+          callback: (value) => `${(Number(value) / 1_000_000).toFixed(0)}M`,
+        },
+      },
+      y: { grid: { display: false }, ticks: { color: '#374151', font: { size: 11 } } },
+    },
+  }), [topProducts]);
+
+  const kpiCards = [
+    {
+      label: 'Doanh thu',
+      value: loading ? '...' : currency(summary.revenue || 0),
+      deltaValue: delta.revenue,
+      icon: TrendingUp,
+      color: '#4ADE80',
+    },
+    {
+      label: 'Don hoan tat',
+      value: loading ? '...' : numberFormat(summary.completedOrders || 0),
+      deltaValue: delta.completedOrders,
+      icon: CircleCheckBig,
+      color: '#10B981',
+    },
+    {
+      label: 'Don dang xu ly',
+      value: loading ? '...' : numberFormat(summary.processingOrders || 0),
+      deltaValue: delta.processingOrders,
+      icon: ClipboardList,
+      color: '#60A5FA',
+    },
+    {
+      label: 'Ti le huy',
+      value: loading ? '...' : percent(summary.cancelRate || 0),
+      deltaValue: delta.cancelRate,
+      icon: AlertTriangle,
+      color: '#F59E0B',
+    },
+    {
+      label: 'AOV',
+      value: loading ? '...' : currency(summary.aov || 0),
+      deltaValue: delta.aov,
+      icon: CreditCard,
+      color: '#A78BFA',
+    },
+    {
+      label: 'Luot truy cap',
+      value: loading ? '...' : (traffic.status === 'ok' ? numberFormat(summary.visits || 0) : '--'),
+      deltaValue: delta.visits,
+      icon: Users,
+      color: '#1A1A1A',
+    },
+  ];
+
+  const statusColors = {
+    PENDING: 'text-amber-500',
+    CONFIRMED: 'text-blue-500',
+    SHIPPING: 'text-violet-500',
+    DELIVERED: 'text-emerald-600',
+    CANCELLED: 'text-red-500',
+  };
 
   return (
-    <PageShell title="Seller Dashboard" subtitle="Quản lý sản phẩm, đơn hàng và trạng thái KYC của người bán.">
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        <StatCard label="Sản phẩm" value={products.length} icon={Package} accentColor="#10B981" />
-        <StatCard label="Đơn chờ" value={pendingOrders} icon={Clock3} accentColor="#10B981" />
-        <StatCard label="Đang xử lý" value={processingOrders} icon={ClipboardList} accentColor="#10B981" />
-        <StatCard label="Doanh thu ước tính" value={currency(estimatedRevenue)} icon={TrendingUp} accentColor="#10B981" />
+    <PageShell title="Seller Dashboard" subtitle="Tong hop doanh thu, don hang va hieu qua van hanh cua shop.">
+      <div className="flex items-center flex-wrap gap-2">
+        <Calendar size={13} className="text-text-muted shrink-0" />
+        {[
+          { key: '7d', label: '7 ngay' },
+          { key: '30d', label: '30 ngay' },
+          { key: '90d', label: '90 ngay' },
+        ].map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            onClick={() => setRange(item.key)}
+            className={`px-3 py-1 rounded-full text-xs transition-colors ${
+              range === item.key
+                ? 'bg-primary text-white'
+                : 'glass text-text-muted hover:text-primary border border-black/10'
+            }`}
+          >
+            {item.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => setRefreshTick((value) => value + 1)}
+          className="ml-auto h-8 px-3 rounded-full border border-black/20 text-xs uppercase tracking-[0.1em] inline-flex items-center gap-1.5 hover:bg-white/70"
+        >
+          <RefreshCw size={13} />
+          Lam moi
+        </button>
       </div>
 
-      <div className="mt-6 grid grid-cols-1 xl:grid-cols-3 gap-4">
-        <SectionCard title="Cảnh báo vận hành">
-          <div className="space-y-2 text-sm text-text-muted">
-            <p className="flex items-center gap-2"><AlertTriangle size={16} className="text-amber-600" /> {lowStockCount > 0 ? `${lowStockCount} sản phẩm sắp hết hàng` : 'Tồn kho đang ổn định'}</p>
-            <p className="flex items-center gap-2"><Bell size={16} className="text-blue-600" /> {pendingOrders > 0 ? `${pendingOrders} đơn cần xác nhận` : 'Không có đơn chờ xác nhận'}</p>
-            <p className="flex items-center gap-2"><BadgeCheck size={16} className="text-emerald-600" /> KYC hiện tại: {user?.sellerProfile?.kycStatus || 'CHƯA GỬI HỒ SƠ'}</p>
-          </div>
-        </SectionCard>
+      <p className="text-xs text-text-muted mt-2">Ky hien tai: {rangeLabel} ({chartBucketLabel})</p>
+      {error ? <div className="mt-3"><MessageBox type="error" text={error} /></div> : null}
 
-        <SectionCard title="Đơn gần đây">
-          <div className="space-y-2">
-            {recentOrders.length === 0 ? <EmptyState text="Chưa có đơn hàng mới." /> : recentOrders.map((order) => (
-              <div key={order.id} className="rounded-xl border border-black/10 bg-white/60 px-3 py-2 text-sm flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-primary">#{order.id.slice(0, 8)}</p>
-                  <p className="text-xs text-text-muted">{currency(order.totalAmount || 0)}</p>
+      <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-3">
+        {kpiCards.map((card) => (
+          <SellerKpiCard
+            key={card.label}
+            label={card.label}
+            value={card.value}
+            delta={card.deltaValue}
+            icon={card.icon}
+            accentColor={card.color}
+          />
+        ))}
+      </div>
+
+      <div className="mt-4 grid grid-cols-1 xl:grid-cols-3 gap-3">
+        <div className="xl:col-span-2">
+          <SectionCard title={`Doanh thu theo thoi gian (${chartBucketLabel})`} compact>
+            <div style={{ height: 220 }}>
+              {loading
+                ? <EmptyState text="Dang tai du lieu..." />
+                : revenueRows.length
+                  ? <Line data={revenueLineData} options={revenueLineOptions} />
+                  : <EmptyState text="Chua co don hang trong ky da chon." />}
+            </div>
+          </SectionCard>
+        </div>
+
+        <SectionCard title="Phan bo trang thai don" compact>
+          <div style={{ height: 220 }}>
+            {loading ? <EmptyState text="Dang tai du lieu..." /> : (
+              summary.totalOrders > 0
+                ? <Doughnut data={doughnutData} options={DOUGHNUT_OPTIONS} />
+                : <EmptyState text="Chua co don hang trong ky." />
+            )}
+          </div>
+          {!loading && summary.totalOrders > 0 ? (
+            <div className="mt-2 grid grid-cols-1 gap-1 text-xs">
+              {[
+                { key: 'PENDING', color: '#FDBA74' },
+                { key: 'CONFIRMED', color: '#60A5FA' },
+                { key: 'SHIPPING', color: '#A78BFA' },
+                { key: 'DELIVERED', color: '#4ADE80' },
+                { key: 'CANCELLED', color: '#F87171' },
+              ].map((item) => (
+                <div key={item.key} className="flex items-center gap-1.5 min-w-0">
+                  <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: item.color }} />
+                  <span className="text-text-muted truncate">{statusLabel(item.key)}</span>
+                  <span className="font-medium ml-auto shrink-0">{numberFormat(orderStatusCount[item.key])}</span>
                 </div>
-                <span className="text-xs uppercase tracking-[0.08em] text-text-muted">{order.status || '--'}</span>
-              </div>
-            ))}
-          </div>
-        </SectionCard>
-
-        <SectionCard title="Top sản phẩm tồn kho">
-          <div className="space-y-2">
-            {topProducts.length === 0 ? <EmptyState text="Chưa có dữ liệu sản phẩm." /> : topProducts.map((item) => (
-              <div key={item.id} className="rounded-xl border border-black/10 bg-white/60 px-3 py-2 flex items-center justify-between gap-3">
-                <p className="text-sm text-primary truncate">{item.name}</p>
-                <span className="text-xs text-text-muted">Kho: {item.stock}</span>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : null}
         </SectionCard>
       </div>
 
+      <div className="mt-3">
+        <SectionCard title="Xu huong truy cap" compact>
+          {traffic.status === 'ok' ? (
+            <>
+              <div style={{ height: 120 }}>
+                {loading
+                  ? <EmptyState text="Dang tai du lieu..." />
+                  : trafficRows.length
+                    ? <Line data={trafficLineData} options={trafficLineOptions} />
+                    : <EmptyState text="Chua co du lieu traffic trong ky da chon." />}
+              </div>
+              {!loading ? (
+                <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-text-muted">
+                  <span>Visits: <strong className="text-primary">{numberFormat(traffic.visits || 0)}</strong></span>
+                  <span>Unique: <strong className="text-primary">{numberFormat(traffic.uniqueVisitors || 0)}</strong></span>
+                  <span>Pageviews: <strong className="text-primary">{numberFormat(traffic.pageViews || 0)}</strong></span>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div className="rounded-xl border border-black/10 bg-white/60 p-4 text-sm text-text-muted">
+              <p className="font-medium text-primary">
+                {traffic.status === 'unconfigured'
+                  ? 'Chua cau hinh theo doi truy cap.'
+                  : 'Du lieu truy cap dang tam thoi khong kha dung.'}
+              </p>
+              <p className="mt-1 text-xs">{traffic.message || 'Ban co the cau hinh ANALYTICS_PROVIDER=plausible hoac ga4 de hien thi metric truy cap.'}</p>
+            </div>
+          )}
+        </SectionCard>
+      </div>
+
+      <div className="mt-4 grid grid-cols-1 xl:grid-cols-3 gap-3">
+        <SectionCard title="Top san pham theo doanh thu">
+          <div style={{ height: Math.max(180, Math.max(1, topProducts.length) * 44) }}>
+            {loading ? <EmptyState text="Dang tai du lieu..." /> : (
+              topProducts.length
+                ? <Bar data={topProductBarData} options={topProductBarOptions} />
+                : <EmptyState text="Chua co du lieu top san pham trong ky." />
+            )}
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Canh bao ton kho thap">
+          {loading ? <EmptyState text="Dang tai du lieu..." /> : (
+            <div className="space-y-2">
+              {lowStock.length === 0 ? <EmptyState text="Khong co san pham sap het hang." /> : lowStock.map((item) => (
+                <div key={item.id} className="rounded-xl border border-black/10 bg-white/60 px-3 py-2 flex items-center justify-between gap-3">
+                  <p className="text-sm text-primary truncate pr-2">{item.name}</p>
+                  <span className={`text-xs ${Number(item.stock) === 0 ? 'text-red-600' : 'text-amber-600'}`}>
+                    {Number(item.stock) === 0 ? 'Het hang' : `Con ${item.stock}`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </SectionCard>
+
+        <SectionCard
+          title="Don gan day"
+          action={(
+            <Link to="/seller/orders" className="text-xs uppercase tracking-[0.12em] text-primary hover:text-accent">
+              Xem tat ca
+            </Link>
+          )}
+        >
+          {loading ? <EmptyState text="Dang tai du lieu..." /> : (
+            <div className="space-y-2">
+              {recentOrders.length === 0 ? <EmptyState text="Chua co don hang trong ky." /> : recentOrders.map((order) => (
+                <div key={order.id} className="rounded-xl border border-black/10 bg-white/60 px-3 py-2.5 text-sm flex items-center gap-3">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-primary font-medium font-mono text-xs">#{order.id.slice(0, 8)}</p>
+                    <p className="text-xs text-text-muted truncate">{order.buyerName || '--'}</p>
+                    <p className="text-[11px] text-text-muted">{formatDate(order.createdAt)}</p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="font-medium">{currency(order.totalAmount)}</p>
+                    <p className={`text-xs ${statusColors[order.status] || 'text-text-muted'}`}>{statusLabel(order.status)}</p>
+                  </div>
+                  <Link
+                    to="/seller/orders"
+                    state={{ selectedOrderId: order.id }}
+                    title="Xem chi tiet don nay"
+                    className="shrink-0 p-1.5 rounded-lg hover:bg-black/5 text-text-muted hover:text-primary transition-colors"
+                  >
+                    <Eye size={14} />
+                  </Link>
+                </div>
+              ))}
+            </div>
+          )}
+        </SectionCard>
+      </div>
     </PageShell>
   );
 }
@@ -3874,7 +4307,11 @@ export function SettingsPage() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
-  const [form, setForm] = useState({ fullName: '', phone: '', avatar: '' });
+  const [form, setForm] = useState({ fullName: '', phone: '' });
+  const [avatarFile, setAvatarFile] = useState(null);
+  const [avatarPreview, setAvatarPreview] = useState('');
+  const [avatarError, setAvatarError] = useState('');
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const needProfileCompletion = location.state?.reason === 'complete-profile';
   const redirectFrom = location.state?.from;
 
@@ -3882,9 +4319,51 @@ export function SettingsPage() {
     setForm({
       fullName: user?.fullName || '',
       phone: user?.phone || '',
-      avatar: user?.avatar || '',
     });
+    setAvatarPreview(user?.avatar || '');
+    setAvatarFile(null);
+    setAvatarError('');
   }, [user?.fullName, user?.phone, user?.avatar]);
+
+  useEffect(() => () => {
+    if (avatarPreview?.startsWith('blob:')) {
+      URL.revokeObjectURL(avatarPreview);
+    }
+  }, [avatarPreview]);
+
+  const handleAvatarSelect = (event) => {
+    const file = event.target.files?.[0] || null;
+    setAvatarError('');
+
+    if (!file) {
+      setAvatarFile(null);
+      setAvatarPreview(user?.avatar || '');
+      return;
+    }
+
+    if (!/^image\/(jpeg|png|gif|webp)$/.test(file.type)) {
+      setAvatarFile(null);
+      setAvatarError('Chỉ chấp nhận ảnh JPEG, PNG, GIF hoặc WebP.');
+      event.target.value = '';
+      return;
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      setAvatarFile(null);
+      setAvatarError('Kích thước ảnh tối đa 5MB.');
+      event.target.value = '';
+      return;
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+    if (avatarPreview?.startsWith('blob:')) {
+      URL.revokeObjectURL(avatarPreview);
+    }
+    setAvatarFile(file);
+    setAvatarPreview(objectUrl);
+  };
+
+  const avatarInitial = String(form.fullName || user?.email || 'U').trim().charAt(0).toUpperCase();
 
   const syncProfile = async () => {
     setLoading(true);
@@ -3906,15 +4385,30 @@ export function SettingsPage() {
     event.preventDefault();
     setSaving(true);
     setMessage('');
+    setAvatarError('');
     try {
+      let avatarUrl = user?.avatar || null;
+
+      if (avatarFile) {
+        setUploadingAvatar(true);
+        const avatarPayload = new FormData();
+        avatarPayload.append('avatar', avatarFile);
+        const uploadResponse = await api.post('/auth/avatar', avatarPayload, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        });
+        avatarUrl = uploadResponse.data?.data?.url || avatarUrl;
+      }
+
       const response = await api.put('/auth/me', {
         fullName: form.fullName,
         phone: form.phone,
-        avatar: form.avatar || null,
+        avatar: avatarUrl || null,
       });
       const nextUser = response.data?.data || null;
       setUser(nextUser);
       if (nextUser) localStorage.setItem('currentUser', JSON.stringify(nextUser));
+      setAvatarFile(null);
+      setAvatarPreview(nextUser?.avatar || '');
       setMessage('Cập nhật thông tin cá nhân thành công.');
 
       const targetPath = needProfileCompletion && redirectFrom && redirectFrom !== '/settings'
@@ -3925,8 +4419,13 @@ export function SettingsPage() {
         navigate(targetPath || '/', { replace: true });
       }, 450);
     } catch (err) {
+      const uploadMessage = err.response?.data?.message;
+      if (uploadMessage && avatarFile) {
+        setAvatarError(uploadMessage);
+      }
       setMessage(err.response?.data?.message || 'Không thể lưu thông tin cá nhân.');
     } finally {
+      setUploadingAvatar(false);
       setSaving(false);
     }
   };
@@ -3994,23 +4493,37 @@ export function SettingsPage() {
             />
           </div>
           <div className="rounded-xl border border-black/10 bg-white/60 p-4">
-            <label className="text-text-muted flex items-center gap-2"><AtSign size={15} /> Ảnh đại diện URL</label>
-            <input
-              value={form.avatar}
-              onChange={(event) => setForm((prev) => ({ ...prev, avatar: event.target.value }))}
-              className="mt-2 w-full h-10 rounded-xl border border-black/10 px-3 bg-white/80"
-              placeholder="https://..."
-            />
+            <label className="text-text-muted flex items-center gap-2"><AtSign size={15} /> Ảnh đại diện</label>
+            <div className="mt-2 flex items-center gap-3">
+              <div className="h-12 w-12 rounded-full border border-black/10 bg-white/80 overflow-hidden flex items-center justify-center shrink-0">
+                {avatarPreview ? (
+                  <img src={avatarPreview} alt="Avatar preview" className="h-full w-full object-cover" />
+                ) : (
+                  <span className="text-sm font-semibold text-primary">{avatarInitial || 'U'}</span>
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/gif,image/webp"
+                  onChange={handleAvatarSelect}
+                  className="block w-full text-xs text-text-muted file:mr-3 file:px-3 file:h-8 file:rounded-full file:border-0 file:bg-primary/10 file:text-primary file:cursor-pointer"
+                />
+                <p className="text-[11px] text-text-muted mt-1">JPEG/PNG/GIF/WebP, tối đa 5MB.</p>
+              </div>
+            </div>
+            {avatarFile ? <p className="text-[11px] text-primary mt-2 truncate">Đã chọn: {avatarFile.name}</p> : null}
+            {avatarError ? <p className="text-[11px] text-red-600 mt-1">{avatarError}</p> : null}
           </div>
 
           <div className="md:col-span-2 flex items-center justify-between gap-3">
             <p className="text-xs text-text-muted">User ID: <span className="text-primary break-all">{user?.id || '--'}</span></p>
             <button
               type="submit"
-              disabled={saving}
+              disabled={saving || uploadingAvatar}
               className="h-10 px-5 rounded-xl bg-primary text-white text-xs uppercase tracking-[0.12em] disabled:opacity-50"
             >
-              {saving ? 'Đang lưu...' : 'Lưu thông tin'}
+              {uploadingAvatar ? 'Đang upload ảnh...' : saving ? 'Đang lưu...' : 'Lưu thông tin'}
             </button>
           </div>
         </form>
@@ -4060,3 +4573,5 @@ export function UnauthorizedPage() {
     </div>
   );
 }
+
+

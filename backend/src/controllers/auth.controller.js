@@ -1,4 +1,5 @@
 const authService = require('../services/auth.service');
+const { uploadBufferToCloudinary } = require('../config/cloudinary');
 const {
   validateRegister,
   validateLogin,
@@ -84,6 +85,31 @@ async function updateMe(req, res, next) {
   }
 }
 
+async function uploadAvatar(req, res, next) {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ status: 400, message: 'Thieu file avatar (field: avatar)' });
+    }
+
+    const uploadResult = await uploadBufferToCloudinary(req.file.buffer, {
+      folder: 'kinhtot/avatars',
+      resource_type: 'image',
+      overwrite: false,
+      format: 'webp',
+    });
+
+    return sendSuccess(res, 'Upload avatar thanh cong', {
+      url: uploadResult.secure_url,
+      publicId: uploadResult.public_id,
+      width: uploadResult.width,
+      height: uploadResult.height,
+      bytes: uploadResult.bytes,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   register,
   login,
@@ -92,4 +118,5 @@ module.exports = {
   getMe,
   uploadKYC,
   updateMe,
+  uploadAvatar,
 };

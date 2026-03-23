@@ -1,37 +1,105 @@
-import { useEffect, useState } from 'react';
-import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { useScrollPosition } from '../../hooks/useScrollPosition';
-import { Search, ShoppingBag, User, Menu, X, MessageCircle, Scale } from 'lucide-react';
-import { getCompareIds } from '../../pages/ComparePage';
+import { useEffect, useRef, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import {
+  ShoppingBag,
+  User,
+  Menu,
+  X,
+  MessageCircle,
+  Scale,
+  ChevronDown,
+  Settings,
+  LogOut,
+} from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { useScrollPosition } from '../../hooks/useScrollPosition';
+import { getCompareIds } from '../../pages/ComparePage';
 import { useAuth } from '../../context/AuthContext';
 import { getRoleHomePath } from '../../utils/auth';
+
+function getUserInitial(user) {
+  const source = String(user?.fullName || user?.email || 'U').trim();
+  return source ? source.charAt(0).toUpperCase() : 'U';
+}
+
+function AvatarBadge({ user, sizeClass = 'h-8 w-8', textClass = 'text-xs' }) {
+  const avatarUrl = String(user?.avatar || '').trim();
+  const [imageFailed, setImageFailed] = useState(false);
+
+  useEffect(() => {
+    setImageFailed(false);
+  }, [avatarUrl]);
+
+  const shouldShowImage = Boolean(avatarUrl) && !imageFailed;
+
+  return (
+    <span
+      className={`inline-flex ${sizeClass} shrink-0 items-center justify-center rounded-full border border-black/10 bg-white/80 overflow-hidden`}
+      aria-hidden
+    >
+      {shouldShowImage ? (
+        <img
+          src={avatarUrl}
+          alt={user?.fullName || 'Avatar'}
+          className="h-full w-full object-cover"
+          onError={() => setImageFailed(true)}
+        />
+      ) : (
+        <span className={`font-semibold text-primary ${textClass}`}>{getUserInitial(user)}</span>
+      )}
+    </span>
+  );
+}
 
 export default function Navbar({ onOpenAIChat }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { isAuthenticated, role, logout } = useAuth();
+  const { isAuthenticated, role, user, logout } = useAuth();
   const scrollY = useScrollPosition();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [cartCount, setCartCount] = useState(0);
   const [compareCount, setCompareCount] = useState(() => getCompareIds().length);
+  const profileMenuRef = useRef(null);
+
   const isScrolled = scrollY > 20;
   const accountPath = isAuthenticated ? (role === 'BUYER' ? '/account' : getRoleHomePath(role)) : '/login';
+  const displayName = user?.fullName || user?.email || 'Tài khoản';
 
   const handleLogout = () => {
     logout();
+    setProfileMenuOpen(false);
     setMenuOpen(false);
     navigate('/login', { replace: true });
   };
 
   useEffect(() => {
-    if (!menuOpen) return;
+    setMenuOpen(false);
+    setProfileMenuOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!menuOpen && !profileMenuOpen) return;
     const closeOnEscape = (event) => {
-      if (event.key === 'Escape') setMenuOpen(false);
+      if (event.key === 'Escape') {
+        setMenuOpen(false);
+        setProfileMenuOpen(false);
+      }
     };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [menuOpen]);
+  }, [menuOpen, profileMenuOpen]);
+
+  useEffect(() => {
+    if (!profileMenuOpen) return;
+    const closeOnOutsideClick = (event) => {
+      if (profileMenuRef.current && !profileMenuRef.current.contains(event.target)) {
+        setProfileMenuOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', closeOnOutsideClick);
+    return () => window.removeEventListener('mousedown', closeOnOutsideClick);
+  }, [profileMenuOpen]);
 
   useEffect(() => {
     const syncCartCount = () => {
@@ -58,8 +126,8 @@ export default function Navbar({ onOpenAIChat }) {
     };
   }, []);
 
-  const syncCompareCount = () => setCompareCount(getCompareIds().length);
   useEffect(() => {
+    const syncCompareCount = () => setCompareCount(getCompareIds().length);
     syncCompareCount();
     window.addEventListener('compare-updated', syncCompareCount);
     return () => window.removeEventListener('compare-updated', syncCompareCount);
@@ -82,7 +150,7 @@ export default function Navbar({ onOpenAIChat }) {
             KÍNH TỐT
           </Link>
 
-          <div className="hidden md:flex items-center gap-6">
+          <div className="hidden md:flex items-center gap-5">
             <Link to="/products" className="text-xs uppercase tracking-[0.22em] text-primary/80 hover:text-accent transition-colors shrink-0">
               Sản phẩm
             </Link>
@@ -105,24 +173,72 @@ export default function Navbar({ onOpenAIChat }) {
             <button type="button" onClick={onOpenAIChat} className="p-2 text-primary/80 hover:text-accent transition-colors" aria-label="AI Stylist">
               <MessageCircle size={20} strokeWidth={1.5} />
             </button>
-            <Link to={accountPath} className="p-2 text-primary/80 hover:text-accent transition-colors" aria-label="Tài khoản">
-              <User size={20} strokeWidth={1.5} />
-            </Link>
+
             {isAuthenticated ? (
-              <button
-                type="button"
-                onClick={handleLogout}
-                className="text-xs uppercase tracking-[0.14em] px-4 h-9 rounded-full border border-black/20 hover:bg-white/70 transition-colors"
+              <div className="relative" ref={profileMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => setProfileMenuOpen((prev) => !prev)}
+                  className="h-10 max-w-[260px] pl-1 pr-3 rounded-full border border-black/15 bg-white/65 hover:bg-white/80 transition-colors inline-flex items-center gap-2"
+                  aria-label="Mở menu tài khoản"
+                >
+                  <AvatarBadge user={user} sizeClass="h-8 w-8" textClass="text-[11px]" />
+                  <span className="text-xs font-medium text-primary truncate max-w-38">{displayName}</span>
+                  <ChevronDown size={16} className={`text-primary/70 transition-transform ${profileMenuOpen ? 'rotate-180' : ''}`} />
+                </button>
+
+                <AnimatePresence>
+                  {profileMenuOpen ? (
+                    <motion.div
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 8 }}
+                      transition={{ duration: 0.18 }}
+                      className="absolute right-0 mt-2 w-52 glass-strong border border-black/10 rounded-2xl p-2 shadow-[0_18px_36px_rgba(0,0,0,0.12)]"
+                    >
+                      <Link
+                        to={accountPath}
+                        onClick={() => setProfileMenuOpen(false)}
+                        className="h-10 px-3 rounded-xl hover:bg-white/70 transition-colors text-sm text-primary flex items-center gap-2"
+                      >
+                        <User size={16} />
+                        Tài khoản
+                      </Link>
+                      <Link
+                        to="/settings"
+                        onClick={() => setProfileMenuOpen(false)}
+                        className="h-10 px-3 rounded-xl hover:bg-white/70 transition-colors text-sm text-primary flex items-center gap-2"
+                      >
+                        <Settings size={16} />
+                        Cài đặt
+                      </Link>
+                      <button
+                        type="button"
+                        onClick={handleLogout}
+                        className="w-full h-10 px-3 rounded-xl hover:bg-white/70 transition-colors text-sm text-red-600 flex items-center gap-2"
+                      >
+                        <LogOut size={16} />
+                        Đăng xuất
+                      </button>
+                    </motion.div>
+                  ) : null}
+                </AnimatePresence>
+              </div>
+            ) : (
+              <Link
+                to="/login"
+                className="h-10 px-4 rounded-full border border-black/20 text-xs uppercase tracking-[0.14em] hover:bg-white/70 transition-colors inline-flex items-center gap-2"
               >
-                Đăng xuất
-              </button>
-            ) : null}
+                <User size={16} />
+                Đăng nhập
+              </Link>
+            )}
           </div>
 
           <button
             type="button"
             className="md:hidden p-2 text-primary/90"
-            onClick={() => setMenuOpen(!menuOpen)}
+            onClick={() => setMenuOpen((prev) => !prev)}
             aria-label={menuOpen ? 'Đóng menu' : 'Mở menu'}
           >
             {menuOpen ? <X size={24} /> : <Menu size={24} />}
@@ -139,6 +255,16 @@ export default function Navbar({ onOpenAIChat }) {
               className="md:hidden py-4 border-t border-black/10 glass rounded-2xl mb-4"
             >
               <div className="flex flex-col gap-4 px-4">
+                {isAuthenticated ? (
+                  <div className="rounded-2xl border border-black/10 bg-white/60 p-3 flex items-center gap-3">
+                    <AvatarBadge user={user} sizeClass="h-10 w-10" />
+                    <div className="min-w-0">
+                      <p className="text-sm text-primary font-medium truncate">{displayName}</p>
+                      <p className="text-xs text-text-muted truncate">{user?.email || ''}</p>
+                    </div>
+                  </div>
+                ) : null}
+
                 <Link to="/products" className="text-sm uppercase tracking-[0.18em] text-primary/85 hover:text-accent" onClick={() => setMenuOpen(false)}>
                   Sản phẩm
                 </Link>
@@ -153,18 +279,28 @@ export default function Navbar({ onOpenAIChat }) {
                 <button type="button" onClick={() => { setMenuOpen(false); onOpenAIChat?.(); }} className="text-left text-sm uppercase tracking-[0.18em] text-primary/85 hover:text-accent">
                   AI Stylist
                 </button>
-                <Link to={accountPath} className="text-sm uppercase tracking-[0.18em] text-primary/85 hover:text-accent" onClick={() => setMenuOpen(false)}>
-                  {isAuthenticated ? 'Tài khoản' : 'Đăng nhập'}
-                </Link>
+
                 {isAuthenticated ? (
-                  <button
-                    type="button"
-                    onClick={handleLogout}
-                    className="text-left text-sm uppercase tracking-[0.18em] text-primary/85 hover:text-accent"
-                  >
-                    Đăng xuất
-                  </button>
-                ) : null}
+                  <>
+                    <Link to={accountPath} className="text-sm uppercase tracking-[0.18em] text-primary/85 hover:text-accent" onClick={() => setMenuOpen(false)}>
+                      Tài khoản
+                    </Link>
+                    <Link to="/settings" className="text-sm uppercase tracking-[0.18em] text-primary/85 hover:text-accent" onClick={() => setMenuOpen(false)}>
+                      Cài đặt
+                    </Link>
+                    <button
+                      type="button"
+                      onClick={handleLogout}
+                      className="text-left text-sm uppercase tracking-[0.18em] text-red-600 hover:text-red-700"
+                    >
+                      Đăng xuất
+                    </button>
+                  </>
+                ) : (
+                  <Link to="/login" className="text-sm uppercase tracking-[0.18em] text-primary/85 hover:text-accent" onClick={() => setMenuOpen(false)}>
+                    Đăng nhập
+                  </Link>
+                )}
               </div>
             </motion.div>
           ) : null}
