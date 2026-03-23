@@ -1,4 +1,5 @@
 const prisma = require('../config/prisma');
+const { getTrafficStats } = require('./analytics.service');
 
 /** Slug ứng với 6 card danh mục trên homepage (theo thứ tự). */
 const HOME_CATEGORY_SLUGS = ['kinh-ram', 'gong-kinh', 'trong-kinh', 'phu-kien'];
@@ -300,4 +301,332 @@ async function getAdminStats({ startDate, endDate } = {}) {
   };
 }
 
-module.exports = { getHomeStats, getAdminStats };
+const SELLER_RANGE_DAYS = {
+  '7d': 7,
+  '30d': 30,
+  '90d': 90,
+};
+
+const SELLER_STATUS_ORDER = ['PENDING', 'CONFIRMED', 'SHIPPING', 'DELIVERED', 'CANCELLED'];
+
+function toNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function formatDateInTimeZone(value, timeZone) {
+  const date = value instanceof Date ? value : new Date(value);
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timeZone || 'Asia/Ho_Chi_Minh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const year = parts.find((item) => item.type === 'year')?.value;
+  const month = parts.find((item) => item.type === 'month')?.value;
+  const day = parts.find((item) => item.type === 'day')?.value;
+  if (!year || !month || !day) return date.toISOString().slice(0, 10);
+  return `${year}-${month}-${day}`;
+}
+
+function resolveSellerPeriod(range = '30d') {
+  const normalizedRange = Object.prototype.hasOwnProperty.call(SELLER_RANGE_DAYS, range) ? range : '30d';
+  const days = SELLER_RANGE_DAYS[normalizedRange];
+  const toDate = new Date();
+  toDate.setHours(23, 59, 59, 999);
+  const fromDate = new Date(toDate);
+  fromDate.setDate(fromDate.getDate() - (days - 1));
+  fromDate.setHours(0, 0, 0, 0);
+  return { range: normalizedRange, days, fromDate, toDate };
+}
+
+function getSellerOrderScope(sellerId) {
+  return {
+    OR: [
+      { sellerId },
+      { sellerId: null, details: { some: { product: { sellerId } } } },
+    ],
+  };
+}
+
+function getEmptyStatusCounts() {
+  return {
+    PENDING: 0,
+    CONFIRMED: 0,
+    SHIPPING: 0,
+    DELIVERED: 0,
+    CANCELLED: 0,
+  };
+}
+
+function calculateDeltaPercent(current, previous) {
+  const currentNumber = toNumber(current);
+  const previousNumber = toNumber(previous);
+  if (Math.abs(previousNumber) < 0.000001) return null;
+  return Number((((currentNumber - previousNumber) / Math.abs(previousNumber)) * 100).toFixed(2));
+}
+
+async function getSellerSummaryForPeriod(sellerId, dateFilter) {
+  const sellerScope = getSellerOrderScope(sellerId);
+  const [revenueAgg, statusGroups] = await Promise.all([
+    prisma.order.aggregate({
+      where: { ...sellerScope, status: 'DELIVERED', createdAt: dateFilter },
+      _sum: { totalAmount: true },
+    }),
+    prisma.order.groupBy({
+      by: ['status'],
+      where: { ...sellerScope, createdAt: dateFilter },
+      _count: { id: true },
+    }),
+  ]);
+
+  const statusCounts = getEmptyStatusCounts();
+  for (const row of statusGroups) {
+    statusCounts[row.status] = row._count.id;
+  }
+
+  const totalOrders = Object.values(statusCounts).reduce((sum, count) => sum + count, 0);
+  const completedOrders = statusCounts.DELIVERED;
+  const processingOrders = statusCounts.PENDING + statusCounts.CONFIRMED + statusCounts.SHIPPING;
+  const cancelledOrders = statusCounts.CANCELLED;
+  const revenue = toNumber(revenueAgg._sum?.totalAmount ?? 0);
+  const cancelRate = totalOrders > 0 ? Number(((cancelledOrders / totalOrders) * 100).toFixed(2)) : 0;
+  const aov = completedOrders > 0 ? Number((revenue / completedOrders).toFixed(2)) : 0;
+
+  return {
+    revenue,
+    completedOrders,
+    processingOrders,
+    cancelledOrders,
+    totalOrders,
+    cancelRate,
+    aov,
+    statusCounts,
+  };
+}
+
+async function getSellerStats({ sellerId, range = '30d', tz = 'Asia/Ho_Chi_Minh' } = {}) {
+  if (!sellerId) {
+    throw Object.assign(new Error('Missing seller id for seller dashboard stats'), { statusCode: 400 });
+  }
+
+  const period = resolveSellerPeriod(range);
+  const timeZone = String(tz || 'Asia/Ho_Chi_Minh').trim() || 'Asia/Ho_Chi_Minh';
+  const dateFilter = { gte: period.fromDate, lte: period.toDate };
+
+  const previousToDate = new Date(period.fromDate);
+  previousToDate.setMilliseconds(previousToDate.getMilliseconds() - 1);
+  previousToDate.setHours(23, 59, 59, 999);
+
+  const previousFromDate = new Date(period.fromDate);
+  previousFromDate.setDate(previousFromDate.getDate() - period.days);
+  previousFromDate.setHours(0, 0, 0, 0);
+
+  const previousDateFilter = { gte: previousFromDate, lte: previousToDate };
+  const sellerScope = getSellerOrderScope(sellerId);
+  const periodFromText = formatDateInTimeZone(period.fromDate, timeZone);
+  const periodToText = formatDateInTimeZone(period.toDate, timeZone);
+
+  const [
+    summary,
+    previousSummary,
+    ordersInRange,
+    recentOrders,
+    deliveredDetails,
+    lowStock,
+    trafficStats,
+  ] = await Promise.all([
+    getSellerSummaryForPeriod(sellerId, dateFilter),
+    getSellerSummaryForPeriod(sellerId, previousDateFilter),
+    prisma.order.findMany({
+      where: { ...sellerScope, createdAt: dateFilter },
+      select: { createdAt: true, status: true, totalAmount: true },
+      orderBy: { createdAt: 'asc' },
+    }),
+    prisma.order.findMany({
+      where: { ...sellerScope, createdAt: dateFilter },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+      select: {
+        id: true,
+        status: true,
+        totalAmount: true,
+        createdAt: true,
+        buyer: { select: { fullName: true, email: true } },
+      },
+    }),
+    prisma.orderDetail.findMany({
+      where: {
+        product: { sellerId },
+        order: { status: 'DELIVERED', createdAt: dateFilter },
+      },
+      select: {
+        productId: true,
+        quantity: true,
+        price: true,
+        product: { select: { name: true } },
+      },
+    }),
+    prisma.product.findMany({
+      where: { sellerId, isActive: true, stock: { lte: 5 } },
+      select: { id: true, name: true, stock: true },
+      orderBy: { stock: 'asc' },
+      take: 5,
+    }),
+    getTrafficStats({ from: periodFromText, to: periodToText }),
+  ]);
+
+  const seriesMap = new Map();
+  for (let offset = 0; offset < period.days; offset += 1) {
+    const d = new Date(period.fromDate);
+    d.setDate(d.getDate() + offset);
+    const key = formatDateInTimeZone(d, timeZone);
+    seriesMap.set(key, {
+      date: key,
+      revenue: 0,
+      totalOrders: 0,
+      completedOrders: 0,
+      cancelledOrders: 0,
+    });
+  }
+
+  for (const order of ordersInRange) {
+    const key = formatDateInTimeZone(order.createdAt, timeZone);
+    if (!seriesMap.has(key)) continue;
+    const row = seriesMap.get(key);
+    row.totalOrders += 1;
+    if (order.status === 'DELIVERED') {
+      row.completedOrders += 1;
+      row.revenue += toNumber(order.totalAmount);
+    }
+    if (order.status === 'CANCELLED') row.cancelledOrders += 1;
+  }
+
+  const topProductMap = new Map();
+  for (const detail of deliveredDetails) {
+    const productId = detail.productId;
+    const quantity = toNumber(detail.quantity);
+    const revenue = toNumber(detail.price) * quantity;
+    if (!topProductMap.has(productId)) {
+      topProductMap.set(productId, {
+        productId,
+        productName: detail.product?.name || productId,
+        quantitySold: 0,
+        revenue: 0,
+      });
+    }
+    const current = topProductMap.get(productId);
+    current.quantitySold += quantity;
+    current.revenue += revenue;
+  }
+
+  const topProducts = Array.from(topProductMap.values())
+    .sort((a, b) => b.revenue - a.revenue)
+    .slice(0, 5)
+    .map((item) => ({
+      ...item,
+      revenue: Number(item.revenue.toFixed(2)),
+    }));
+
+  const trafficSeriesMap = new Map();
+  for (const row of seriesMap.values()) {
+    trafficSeriesMap.set(row.date, {
+      date: row.date,
+      visits: 0,
+      uniqueVisitors: 0,
+      pageViews: 0,
+    });
+  }
+
+  for (const row of trafficStats.series || []) {
+    const key = String(row?.date || '');
+    if (!key) continue;
+    if (!trafficSeriesMap.has(key)) {
+      trafficSeriesMap.set(key, {
+        date: key,
+        visits: 0,
+        uniqueVisitors: 0,
+        pageViews: 0,
+      });
+    }
+    const current = trafficSeriesMap.get(key);
+    current.visits += toNumber(row?.visits);
+    current.uniqueVisitors += toNumber(row?.uniqueVisitors);
+    current.pageViews += toNumber(row?.pageViews);
+  }
+
+  return {
+    range: period.range,
+    timezone: timeZone,
+    period: {
+      from: periodFromText,
+      to: periodToText,
+      days: period.days,
+    },
+    summary: {
+      revenue: summary.revenue,
+      completedOrders: summary.completedOrders,
+      processingOrders: summary.processingOrders,
+      cancelledOrders: summary.cancelledOrders,
+      totalOrders: summary.totalOrders,
+      cancelRate: summary.cancelRate,
+      aov: summary.aov,
+      visits: toNumber(trafficStats.visits),
+      uniqueVisitors: toNumber(trafficStats.uniqueVisitors),
+      pageViews: toNumber(trafficStats.pageViews),
+    },
+    previousSummary: {
+      revenue: previousSummary.revenue,
+      completedOrders: previousSummary.completedOrders,
+      processingOrders: previousSummary.processingOrders,
+      cancelledOrders: previousSummary.cancelledOrders,
+      totalOrders: previousSummary.totalOrders,
+      cancelRate: previousSummary.cancelRate,
+      aov: previousSummary.aov,
+    },
+    delta: {
+      revenue: calculateDeltaPercent(summary.revenue, previousSummary.revenue),
+      completedOrders: calculateDeltaPercent(summary.completedOrders, previousSummary.completedOrders),
+      processingOrders: calculateDeltaPercent(summary.processingOrders, previousSummary.processingOrders),
+      cancelRate: calculateDeltaPercent(summary.cancelRate, previousSummary.cancelRate),
+      aov: calculateDeltaPercent(summary.aov, previousSummary.aov),
+      visits: null,
+      uniqueVisitors: null,
+      pageViews: null,
+    },
+    series: {
+      revenue: Array.from(seriesMap.values()),
+      traffic: Array.from(trafficSeriesMap.values()).sort((a, b) => a.date.localeCompare(b.date)),
+    },
+    distribution: {
+      orderStatus: SELLER_STATUS_ORDER.map((status) => ({
+        status,
+        count: summary.statusCounts[status] ?? 0,
+      })),
+    },
+    traffic: {
+      status: trafficStats.status,
+      provider: trafficStats.provider,
+      visits: toNumber(trafficStats.visits),
+      uniqueVisitors: toNumber(trafficStats.uniqueVisitors),
+      pageViews: toNumber(trafficStats.pageViews),
+      series: Array.from(trafficSeriesMap.values()).sort((a, b) => a.date.localeCompare(b.date)),
+      message: trafficStats.message || null,
+    },
+    topProducts,
+    lowStock: lowStock.map((item) => ({
+      id: item.id,
+      name: item.name,
+      stock: item.stock,
+    })),
+    recentOrders: recentOrders.map((item) => ({
+      id: item.id,
+      status: item.status,
+      totalAmount: toNumber(item.totalAmount),
+      createdAt: item.createdAt,
+      buyerName: item.buyer?.fullName || item.buyer?.email || '--',
+    })),
+  };
+}
+
+module.exports = { getHomeStats, getAdminStats, getSellerStats };
